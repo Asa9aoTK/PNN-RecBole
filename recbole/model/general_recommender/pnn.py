@@ -11,21 +11,22 @@ from recbole.utils import InputType
 from recbole.model.loss import BPRLoss
 
 
-class PAN(GeneralRecommender):
+class PNN(GeneralRecommender):
     input_type = InputType.PAIRWISE
 
+    def BPR_loss(pos_cos, neg_cos):
+        return torch.log(1 + torch.exp(neg_cos.mean(dim=-1) - pos_cos).sum(dim=1))
     @staticmethod
     def Euclidean(x, y):
         x, y = F.normalize(x, dim=-1), F.normalize(y, dim=-1)
         return (x - y).norm(p=2, dim=1).pow(2).mean()
-
     @staticmethod
     def item_loss(x):
         x = F.normalize(x, dim=-1)
         return torch.pdist(x.mean(dim=-2).squeeze(-2), p=2).pow(2).mul(-2).exp().mean().log()
 
     def __init__(self, config, dataset):
-        super(PAN, self).__init__(config, dataset)
+        super(PNN, self).__init__(config, dataset)
 
         # Get user history interacted items
         self.history_item_id, _, self.history_item_len = dataset.history_item_matrix(
@@ -36,7 +37,8 @@ class PAN(GeneralRecommender):
 
         # load parameters info
         self.embedding_size = config["embedding_size"]
-        self.margin = config["margin"]
+        self.alpha = config["alpha"]
+        self.beta = config['beta']
         self.negative_weight = config["negative_weight"]
         self.gamma = config["gamma"]
         self.neg_seq_len = config["train_neg_sample_args"]["sample_num"]
@@ -70,12 +72,11 @@ class PAN(GeneralRecommender):
         # get the mask
         self.item_emb.weight.data[0, :] = 0
     
-    # def BPR(pos_cos, neg_cos):
-    #     torch.log(1 + torch.exp(neg_cos.mean(dim=-1) - pos_cos).sum(dim=1))
+
 
     def get_UI_aggregation(self, user_e, history_item_e, history_len):
 
-            # [user_num, max_history_len, embedding_size]
+        # [user_num, max_history_len, embedding_size]
         key = self.W_k(history_item_e)
         attention = torch.matmul(key, user_e.unsqueeze(2)).squeeze(2)
         e_attention = torch.exp(attention)
@@ -93,9 +94,9 @@ class PAN(GeneralRecommender):
         UI_aggregation_e = g * user_e + (1 - g) * out
         return UI_aggregation_e
 
-    def get_cos(self, user_e, item_e):
-        UI_cos = torch.sum(torch.mul(user_e, item_e), axis=-1)
-        return UI_cos
+    def score(self, user_e, item_e):
+        score = torch.sum(torch.mul(user_e, item_e), axis=-1)
+        return score
 
     def forward(self, user, pos_item, history_item, history_len, neg_item_seq):
 
@@ -107,30 +108,28 @@ class PAN(GeneralRecommender):
         history_item_e = self.item_emb(history_item)
         # [nuser_num, neg_seq_len, embedding_size]
         neg_item_seq_e = self.item_emb(neg_item_seq)
-        # print(neg_item_seq_e.shape)
 
-        # [user_num, embedding_size]
+        pos_cos = self.score(user_e, pos_item_e)
+        neg_cos = self.score(user_e.unsqueeze(dim=1), neg_item_seq_e)
+
+
+        #semi-supervised learning
+        
+        max_indices = torch.max(neg_cos, dim=1)[1].detach()  # [batch_size]
         UI_aggregation_e = self.get_UI_aggregation(user_e, history_item_e, history_len)
         lambdat = torch.sigmoid(self.lambdat(UI_aggregation_e).mean())
-        # UI_aggregation_e = self.dropout(UI_aggregation_e)
-        
-
-        pos_cos = self.get_cos(user_e, pos_item_e)
-        neg_cos = self.get_cos(user_e.unsqueeze(dim=1), neg_item_seq_e)
-
-
-        # label
-
-        min_indices = torch.min(neg_cos, dim=1)[1].detach()  # [batch_size]
-        max_indices = torch.max(neg_cos, dim=1)[1].detach()  # [batch_size]
-
-        neg_item = torch.gather(neg_item_seq, dim=1, index=min_indices.unsqueeze(-1)).squeeze()
-        true_neg_e = self.item_emb(neg_item)
-        true_neg_cos = self.get_cos(user_e, true_neg_e)
 
         hard_item = torch.gather(neg_item_seq, dim=1, index=max_indices.unsqueeze(-1)).squeeze()
         hard_neg_e = self.item_emb(hard_item)
-        hard_neg_cos = self.get_cos(user_e, hard_neg_e)
+        hard_neg_cos = self.score(user_e, hard_neg_e)
+        bpr_loss = self.BPR(pos_cos,hard_neg_cos)
+        
+        # classifier
+
+        min_indices = torch.min(neg_cos, dim=1)[1].detach()  # [batch_size]
+        neg_item = torch.gather(neg_item_seq, dim=1, index=min_indices.unsqueeze(-1)).squeeze()
+        true_neg_e = self.item_emb(neg_item)
+        true_neg_cos = self.score(user_e, true_neg_e)
 
         pos_dir = torch.sign(pos_item_e.unsqueeze(dim=1))
         neg_dir = torch.sign(true_neg_e.unsqueeze(dim=1))
@@ -141,21 +140,20 @@ class PAN(GeneralRecommender):
         pos_random_noise = torch.nn.functional.normalize(pos_random_noise, p=2, dim=-1) * 0.1               
         neg_random_noise = torch.nn.functional.normalize(neg_random_noise, p=2, dim=-1) * 0.1
 
-        align_e_1 = pos_random_noise + neg_item_seq_e
-        align_e_2 = neg_random_noise + neg_item_seq_e
+        noise1 = pos_random_noise + neg_item_seq_e
+        noise2 = neg_random_noise + neg_item_seq_e
 
 
 
-        align = self.Euclidean(align_e_1 , align_e_2)
-        uniform = self.item_loss(neg_item_seq_e) / 2
-        amb_loss = align + uniform
+        l_class = self.Euclidean(noise1 , noise2)
+        l_item = self.item_loss(neg_item_seq_e) / 2
+        amb_loss = self.alpha * l_class + self.beta * l_item
 
-        semi_loss = self.BPR(pos_cos,neg_cos.mean(dim=-1)) + self.BPR(neg_cos.mean(dim=-1),true_neg_cos)
+        l_rank = self.BPR(pos_cos,neg_cos.mean(dim=-1)) + self.BPR(neg_cos.mean(dim=-1),true_neg_cos)
 
 
-        # final_loss =  (semi_loss + amb_loss)
-        sup_loss = self.BPR(pos_cos,hard_neg_cos)
-        final_loss = (lambdat*sup_loss + (1-lambdat)*(semi_loss + amb_loss ))
+        
+        final_loss = lambdat * bpr_loss  + (1-lambdat)*(l_rank + self.alpha * l_class + self.beta * l_item )
 
         # l2 regularization loss
         reg_loss = self.reg_loss(
