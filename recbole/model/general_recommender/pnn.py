@@ -15,12 +15,12 @@ class PAN(GeneralRecommender):
     input_type = InputType.PAIRWISE
 
     @staticmethod
-    def alignment(x, y):
+    def Euclidean(x, y):
         x, y = F.normalize(x, dim=-1), F.normalize(y, dim=-1)
         return (x - y).norm(p=2, dim=1).pow(2).mean()
 
     @staticmethod
-    def uniformity(x):
+    def item_loss(x):
         x = F.normalize(x, dim=-1)
         return torch.pdist(x.mean(dim=-2).squeeze(-2), p=2).pow(2).mul(-2).exp().mean().log()
 
@@ -146,8 +146,8 @@ class PAN(GeneralRecommender):
 
 
 
-        align = self.alignment(align_e_1 , align_e_2)
-        uniform = self.uniformity(neg_item_seq_e) / 2
+        align = self.Euclidean(align_e_1 , align_e_2)
+        uniform = self.item_loss(neg_item_seq_e) / 2
         amb_loss = align + uniform
 
         semi_loss = self.BPR(pos_cos,neg_cos.mean(dim=-1)) + self.BPR(neg_cos.mean(dim=-1),true_neg_cos)
