@@ -171,11 +171,10 @@ class PNN(GeneralRecommender):
 
         user = interaction[self.USER_ID]
         pos_item = interaction[self.ITEM_ID]
-        neg_item = interaction[self.NEG_ITEM_ID]
 
-        # get the sequence of neg items
-        neg_item_seq = neg_item.reshape((self.neg_seq_len, -1))
-        neg_item_seq = neg_item_seq.T
+        # get your neg items based on your sampling strategy
+        neg_item_seq = None
+        
         user_number = int(len(user) / self.neg_seq_len)
         # user's id
         user = user[0:user_number]
