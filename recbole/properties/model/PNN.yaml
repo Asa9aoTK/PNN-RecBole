@@ -1,0 +1,17 @@
+embedding_size: 64              # (int) The embedding size of users and items.
+margin: 1                  # (float) The margin to filter negative samples. Range in [-1, 1].
+negative_weight: 10             # (int) Weight to balance between positive-sample and negative-sample loss. 
+gamma: 0.1                      # (float) Weight for fusion of user' and interacted items' representations.
+a: 0.8
+b: 0.1
+aggregator: 'mean'              # (str) The item aggregator ranging in ['mean', 'user_attention', 'self_attention'].
+history_len: 20            # (int) The length of the user's historical interaction items.
+reg_weight: 1e-05               # (float) The L2 regularization weights.
+train_neg_sample_args:          # (dict) Negative sampling configuration for model training.
+  distribution: uniform         # (str) The distribution of negative items.
+  sample_num: 8     # (int) The sampled num of negative items.
+  alpha: 1.0                    # (float) The power of sampling probability for popularity distribution.
+  dynamic: False                # (bool) Whether to use dynamic negative sampling.
+  candidate_num: 0   
+
+topk: [10,15,20,50]
