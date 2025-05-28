@@ -107,6 +107,7 @@ class PNN(GeneralRecommender):
         # [user_num, max_history_len, embedding_size]
         history_item_e = self.item_emb(history_item)
         # [nuser_num, neg_seq_len, embedding_size]
+        # based on Section 4.4
         neg_item_seq_e = self.item_emb(neg_item_seq)
 
         pos_cos = self.score(user_e, pos_item_e)
